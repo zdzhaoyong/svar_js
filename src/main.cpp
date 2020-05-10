@@ -28,14 +28,7 @@ public:
     }
 
     static Napi::Value init(Napi::Env env){
-        std::vector<PropertyDescriptor> properties={InstanceMethod("js", &SvarJS::js),
-                                                    InstanceMethod("toString", &SvarJS::toString),
-                                                    InstanceMethod("asFunc", &SvarJS::asFunc),
-                                                    InstanceMethod("call", &SvarJS::call),
-                                                    InstanceMethod("get", &SvarJS::get),
-                                                    InstanceMethod("set", &SvarJS::set),
-                                                    InstanceMethod("help", &SvarJS::help),
-                                                    InstanceMethod("typeName", &SvarJS::typeName)};
+        std::vector<PropertyDescriptor> properties={};
 
         Napi::Function func = DefineClass(env,"Svar",properties);
 
@@ -43,6 +36,11 @@ public:
         constructor.SuppressDestruct();
 
         return func;
+    }
+
+
+    static Napi::Value Holder(Napi::Env env,Svar src){
+        return External<Svar>::New(env,new Svar(src),[](Napi::Env env, Svar* data){delete data;});
     }
 
     static Napi::Value getNodeClass(Napi::Env env,Svar src){
@@ -68,6 +66,7 @@ public:
             else
                 properties.push_back(StaticValue(kv.first.c_str(),getNode(env,kv.second)));
         }
+        properties.push_back(StaticValue("svarclass_holder",Holder(env,src)));
 
         Napi::Function func = DefineClass(env,cls.name().c_str(),properties,&cls);
         std::shared_ptr<FunctionReference> constructor=std::make_shared<FunctionReference>();
@@ -75,62 +74,6 @@ public:
         constructor->SuppressDestruct();
         cls._attr["__js_constructor"]=constructor;
         return func;
-    }
-
-    Napi::Value get(const Napi::CallbackInfo& info){
-        const Svar& v=var;
-        return getNode(info.Env(),v[fromNode(info[0])]);
-    }
-
-    Napi::Value set(const Napi::CallbackInfo& info){
-        var.set(info[0].As<String>(),fromNode(info[1]));
-        return info.Env().Undefined();
-    }
-
-    Napi::Value call(const Napi::CallbackInfo& info){
-        std::vector<Svar> args;
-        for(int i=0;i<info.Length();++i)
-            args.push_back(fromNode(info[i]));
-
-        Svar ret;
-        if(var.isFunction())
-            ret=var.as<SvarFunction>().Call(args);
-        else if(var.isClass()){
-            ret=var.as<SvarClass>().__init__.as<SvarFunction>().Call(args);
-        }
-        else
-            ret=var.classPtr()->Call(var,info[0].As<String>(),std::vector<Svar>(args.begin()+1,args.end()));
-
-        return getNode(info.Env(),ret);
-    }
-
-    Napi::Value js(const Napi::CallbackInfo& info){
-        return getNode(info.Env(),var);
-    }
-
-    Napi::Value toString(const Napi::CallbackInfo& info){
-        std::stringstream sst;
-        sst<<var;
-
-        return String::New(info.Env(),sst.str());
-    }
-
-    Napi::Value typeName(const Napi::CallbackInfo& info){
-        return String::New(info.Env(),var.typeName());
-    }
-
-    Napi::Value asFunc(const Napi::CallbackInfo& info){
-        SvarFunction& fsvar=var.as<SvarFunction>();
-        return Napi::Function::New(info.Env(),Method,fsvar.name,&fsvar);
-    }
-
-    Napi::Value help(const Napi::CallbackInfo& info){
-        std::stringstream sst;
-        if(var.isFunction())
-            sst<<var.as<SvarFunction>();
-        else
-            sst<<(*var.classPtr());
-        return String::New(info.Env(),sst.str());
     }
 
     static Napi::Value Method(const Napi::CallbackInfo& info){
@@ -176,9 +119,15 @@ public:
             return n.As<String>().Utf8Value();
         case napi_object:
         {
-            SvarJS* w = Napi::ObjectWrap<SvarJS>::Unwrap(n.As<Object>());
-            if(w)
-                return w->var;
+            Object obj = n.As<Object>();
+            Napi::Value cons=obj["constructor"];
+            Napi::Value svar_class_holder = cons.As<Object>()["svarclass_holder"];
+
+            if(svar_class_holder.IsExternal()){
+                SvarJS* w = Napi::ObjectWrap<SvarJS>::Unwrap(n.As<Object>());
+                if(w)
+                    return w->var;
+            }
 
             if(n.IsArray()){
                 Array array=n.As<Array>();
@@ -189,11 +138,27 @@ public:
                 }
                 return vec;
             }
-            else if(n.IsBuffer()){
-                return Svar();
+            else if(n.IsArrayBuffer()){
+                ArrayBuffer buffer=n.As<ArrayBuffer>();
+                return SvarBuffer(buffer.Data(),buffer.ByteLength());
+            }
+            else if(n.IsTypedArray()){
+                TypedArray buffer=n.As<TypedArray>();
+                std::string lut[]={SvarBuffer::format<int8_t>(),
+                                   SvarBuffer::format<uint8_t>(),
+                                   SvarBuffer::format<uint8_t>(),
+                                   SvarBuffer::format<int16_t>(),
+                                   SvarBuffer::format<uint16_t>(),
+                                   SvarBuffer::format<int32_t>(),
+                                   SvarBuffer::format<uint32_t>(),
+                                   SvarBuffer::format<float>(),
+                                   SvarBuffer::format<double>(),
+                                   SvarBuffer::format<int64_t>(),
+                                   SvarBuffer::format<uint64_t>()};
+                std::string format = lut[buffer.TypedArrayType()];
+                return SvarBuffer(buffer.ArrayBuffer().Data(),buffer.ElementSize(),format,{(ssize_t)buffer.ElementLength()},{});
             }
             else {
-                Object obj =n.As<Object>();
                 Array  names = obj.GetPropertyNames();
                 Svar   ret=Svar::object();
                 for(int i=0;i<names.Length();i++)
@@ -208,7 +173,24 @@ public:
         case napi_function:
         {
             Function func = n.As<Function>();
-            return func;
+            while(func.Has("svarfunction_holder")){
+                Napi::Value v=func.Get("svarfunction_holder");
+                if(!v.IsExternal()) break;
+                return * v.As<External<Svar>>().Data();
+            }
+            std::shared_ptr<FunctionReference> funcref=std::make_shared<FunctionReference>();
+            *funcref= Napi::Persistent(func);
+            SvarFunction svarfunc;
+            svarfunc._func=[funcref](std::vector<Svar>& args)->Svar{
+                // TODO: How to be thead safe?
+                std::vector<napi_value> info;
+                for(auto& arg:args)
+                    info.push_back(getNode(funcref->Env(),arg));
+                return fromNode(funcref->Call(info));
+            };
+            svarfunc.do_argcheck=false;
+
+            return svarfunc;
         }
         case napi_external:
             return Svar();
@@ -254,7 +236,6 @@ public:
             convert=[](Napi::Env env,Svar src){
             Object obj = Object::New(env);
             for (std::pair<std::string,Svar> kv : src) {
-//                if(kv.first.front()=='_') continue;
                 obj.Set(kv.first,getNode(env,kv.second));
             }
             return obj;
@@ -262,7 +243,16 @@ public:
         else if(src.is<SvarFunction>())
             convert=[](Napi::Env env,Svar src){
                 SvarFunction& fsvar=src.as<SvarFunction>();
-                return Napi::Function::New(env,Method,fsvar.name,&fsvar);
+                Function func= Napi::Function::New(env,Method,fsvar.name,&fsvar);
+                func.Set("svarfunction_holder",Holder(env,src));
+                return func;
+            };
+        else if(src.is<SvarBuffer>())
+            convert=[](Napi::Env env,Svar src){
+                SvarBuffer& svarbuf=src.as<SvarBuffer>();
+                ArrayBuffer buffer= ArrayBuffer::New(env, svarbuf._ptr, svarbuf.length(),
+                                                     [](Napi::Env, void* , Svar* hint){delete hint;},new Svar(src));
+                return buffer;
             };
         else if(src.is<SvarClass>())
             convert=&SvarJS::getNodeClass;
@@ -291,10 +281,9 @@ public:
 }
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
-    static Svar load(Registry::load);
-    exports=Napi::SvarJS::getNode(env,load).As<Napi::Object>();
+    exports = Napi::SvarJS::getNode(env,Registry::load).As<Napi::Object>();
     exports.Set("Svar", Napi::SvarJS::init(env));
-    exports.Set("load",Napi::SvarJS::getNode(env,load));
+    exports.Set("load",Napi::SvarJS::getNode(env,Registry::load));
     return exports;
 }
 

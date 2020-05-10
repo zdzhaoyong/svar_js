@@ -1,5 +1,4 @@
-svar = require('./svar.node')
-s    = svar.load('sample_module')
+s    = require('bindings')('svar')('sample_module')
 
 console.log(s)
 

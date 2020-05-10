@@ -4,6 +4,9 @@ project(svar_v8)
 include(PICMake)
 set(CMAKE_CXX_STANDARD 11)
 
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/build)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/build)
+
 pi_add_target(svar SHARED src REQUIRED System)
 
 set_target_properties(svar PROPERTIES PREFIX "")
