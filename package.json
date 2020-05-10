@@ -1,0 +1,21 @@
+{
+  "name": "svar",
+  "version": "0.2.0",
+  "main": "index.js",
+  "os": [
+    "win32",
+    "linux"
+  ],
+  "cpu": "x64",
+  "private": true,
+  "scripts": {
+    "test": "node hello.js"
+  },
+  "dependencies": {
+    "bindings": "~1.2.1",
+    "node-addon-api": "^1.0.0"
+  },
+  "devDependencies": {
+    "jimp": "^0.5.6"
+  }
+}
