@@ -8,15 +8,15 @@ This project is use to provide javascript support.
 
 svar_v8 auto wrap the following c++ objects:
 
-* Json Types: number, boolean, string, object, array
-* Function  : 
-* C++ Classes: Auto wrap constructors, member functions
+* Json Types:  number, boolean, string, object, array
+* Function  :  Both Js call C++ and C++ call JS (Not thread safe now)
+* C++ Classes: Auto wrap constructors, member functions, properties
 * C++ Objects: User don't need to declare every classes, svar auto wrap them.
 
 TODO:
 
-* Class Properties Accessor
 * Class inherit
+* ThreadSafe Callback
 
 ## Compile and Install
 
@@ -32,13 +32,7 @@ npm install .
 Write the following index.js file and run with node:
 
 ```
-svar=require('./build/Release/svar.node')
-
-sm=svar.load('sample_module')
-
-person=new sm.Person(28,'zhaoyong')
-
-console.log(person.intro())
+node sample_module.js
 ```
 
 
