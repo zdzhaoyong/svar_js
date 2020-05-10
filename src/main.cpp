@@ -5,24 +5,44 @@ using namespace sv;
 
 namespace Napi {
 
+Napi::FunctionReference constructor;
+
 class SvarJS: public ObjectWrap<SvarJS> {
 public:
     SvarJS(const Napi::CallbackInfo& info)
-        :ObjectWrap<SvarJS>(info){
-//        Napi::Env env = info.Env();
-//        Napi::HandleScope scope(env);
+        : ObjectWrap<SvarJS>(info){
+        if(info.Data()){
+            try{
+                SvarClass& cls=*(SvarClass*)info.Data();
+                std::vector<Svar> args;
+                for(int i=0;i<info.Length();++i)
+                    args.push_back(fromNode(info[i]));
+                var = cls.__init__.as<SvarFunction>().Call(args);
+            }
+            catch(SvarExeption& e){}
+            return;
+        }
 
-        SvarClass& cls = *(SvarClass*) info.Data();
-        Svar __init__ = cls.__init__;
-        if(!__init__.isFunction()) return;
-        try{
-            std::vector<Svar> argv;
-            for(int i=0;i<info.Length();++i)
-                argv.push_back(fromNode(info[i]));
-            object=__init__.as<SvarFunction>().Call(argv);
-        }
-        catch(SvarExeption& e){
-        }
+        if(info.Length())
+            var=fromNode(info[0]);
+    }
+
+    static Napi::Value init(Napi::Env env){
+        std::vector<PropertyDescriptor> properties={InstanceMethod("js", &SvarJS::js),
+                                                    InstanceMethod("toString", &SvarJS::toString),
+                                                    InstanceMethod("asFunc", &SvarJS::asFunc),
+                                                    InstanceMethod("call", &SvarJS::call),
+                                                    InstanceMethod("get", &SvarJS::get),
+                                                    InstanceMethod("set", &SvarJS::set),
+                                                    InstanceMethod("help", &SvarJS::help),
+                                                    InstanceMethod("typeName", &SvarJS::typeName)};
+
+        Napi::Function func = DefineClass(env,"Svar",properties);
+
+        constructor = Napi::Persistent(func);
+        constructor.SuppressDestruct();
+
+        return func;
     }
 
     static Napi::Value getNodeClass(Napi::Env env,Svar src){
@@ -32,26 +52,88 @@ public:
         for(std::pair<std::string,Svar> kv:cls._attr){
             if(kv.second.isFunction()){
                 SvarFunction& func=kv.second.as<SvarFunction>();
+                func.name=kv.first;
                 if(func.is_method)
-                    properties.push_back(InstanceMethod(kv.first.c_str(),&SvarJS::MemberMethod,napi_default));
-                else
-                    properties.push_back(StaticValue(kv.first.c_str(),getNode(env,"InvalidValue"),napi_default));
-//                    properties.push_back(StaticMethod(kv.first.c_str(),Method,napi_default,&func));
+                    properties.push_back(InstanceMethod(func.name.c_str(),&SvarJS::MemberMethod,napi_default,&func));
+                else{
+                    properties.push_back(StaticMethod(func.name.c_str(),Method,napi_default,&func));
+                }
             }
             else if(kv.second.is<SvarClass::SvarProperty>()){
+                SvarClass::SvarProperty& property=kv.second.as<SvarClass::SvarProperty>();
+                properties.push_back(InstanceAccessor(property._name.c_str(),&SvarJS::Getter,
+                                                      property._fset.isFunction()? (&SvarJS::Setter) : nullptr,
+                                                      napi_default,&property));
             }
+            else
+                properties.push_back(StaticValue(kv.first.c_str(),getNode(env,kv.second)));
         }
 
         Napi::Function func = DefineClass(env,cls.name().c_str(),properties,&cls);
-//        auto constructor = Napi::Persistent(func);
-//        constructor.SuppressDestruct();
-//        cls._attr["__js_constructor"]=constructor;
+        std::shared_ptr<FunctionReference> constructor=std::make_shared<FunctionReference>();
+        *constructor= Napi::Persistent(func);
+        constructor->SuppressDestruct();
+        cls._attr["__js_constructor"]=constructor;
         return func;
     }
 
-    static Napi::Value Method(const Napi::CallbackInfo& info){
-//        HandleScope scope(info.Env());
+    Napi::Value get(const Napi::CallbackInfo& info){
+        const Svar& v=var;
+        return getNode(info.Env(),v[fromNode(info[0])]);
+    }
 
+    Napi::Value set(const Napi::CallbackInfo& info){
+        var.set(info[0].As<String>(),fromNode(info[1]));
+        return info.Env().Undefined();
+    }
+
+    Napi::Value call(const Napi::CallbackInfo& info){
+        std::vector<Svar> args;
+        for(int i=0;i<info.Length();++i)
+            args.push_back(fromNode(info[i]));
+
+        Svar ret;
+        if(var.isFunction())
+            ret=var.as<SvarFunction>().Call(args);
+        else if(var.isClass()){
+            ret=var.as<SvarClass>().__init__.as<SvarFunction>().Call(args);
+        }
+        else
+            ret=var.classPtr()->Call(var,info[0].As<String>(),std::vector<Svar>(args.begin()+1,args.end()));
+
+        return getNode(info.Env(),ret);
+    }
+
+    Napi::Value js(const Napi::CallbackInfo& info){
+        return getNode(info.Env(),var);
+    }
+
+    Napi::Value toString(const Napi::CallbackInfo& info){
+        std::stringstream sst;
+        sst<<var;
+
+        return String::New(info.Env(),sst.str());
+    }
+
+    Napi::Value typeName(const Napi::CallbackInfo& info){
+        return String::New(info.Env(),var.typeName());
+    }
+
+    Napi::Value asFunc(const Napi::CallbackInfo& info){
+        SvarFunction& fsvar=var.as<SvarFunction>();
+        return Napi::Function::New(info.Env(),Method,fsvar.name,&fsvar);
+    }
+
+    Napi::Value help(const Napi::CallbackInfo& info){
+        std::stringstream sst;
+        if(var.isFunction())
+            sst<<var.as<SvarFunction>();
+        else
+            sst<<(*var.classPtr());
+        return String::New(info.Env(),sst.str());
+    }
+
+    static Napi::Value Method(const Napi::CallbackInfo& info){
         SvarFunction& func=*(SvarFunction*)info.Data();
         std::vector<Svar> args;
         for(int i=0;i<info.Length();++i)
@@ -62,10 +144,20 @@ public:
     Napi::Value MemberMethod(const Napi::CallbackInfo& info){
         SvarFunction& func = *(SvarFunction*)info.Data();
         std::vector<Svar> args;
-        args.push_back(object);
+        args.push_back(var);
         for(int i=0;i<info.Length();++i)
             args.push_back(fromNode(info[i]));
         return getNode(info.Env(),func.Call(args));
+    }
+
+    Napi::Value Getter(const CallbackInfo& info){
+        SvarClass::SvarProperty& property=*(SvarClass::SvarProperty*)info.Data();
+        return getNode(info.Env(),property._fget(var));
+    }
+
+    void Setter(const CallbackInfo& info, const Napi::Value& value){
+        SvarClass::SvarProperty& property=*(SvarClass::SvarProperty*)info.Data();
+        property._fset(fromNode(value));
     }
 
     static Svar fromNode(Napi::Value n){
@@ -84,6 +176,10 @@ public:
             return n.As<String>().Utf8Value();
         case napi_object:
         {
+            SvarJS* w = Napi::ObjectWrap<SvarJS>::Unwrap(n.As<Object>());
+            if(w)
+                return w->var;
+
             if(n.IsArray()){
                 Array array=n.As<Array>();
                 std::vector<Svar> vec(array.Length());
@@ -97,12 +193,23 @@ public:
                 return Svar();
             }
             else {
-                Object obj=n.As<Object>();
-                obj.GetPropertyNames();
+                Object obj =n.As<Object>();
+                Array  names = obj.GetPropertyNames();
+                Svar   ret=Svar::object();
+                for(int i=0;i<names.Length();i++)
+                {
+                    Napi::Value nms=names[i];
+                    std::string nm=nms.As<String>();
+                    ret[nm]=fromNode(obj.Get(nm));
+                }
+                return ret;
             }
         }
         case napi_function:
-            return Svar();
+        {
+            Function func = n.As<Function>();
+            return func;
+        }
         case napi_external:
             return Svar();
         default:
@@ -113,11 +220,13 @@ public:
         return Svar(n);
     }
 
-    static Napi::Value getNode(Napi::Env env,Svar src){
+    static Napi::Value getNode(Napi::Env env,Svar src,bool onlyJson=true){
+        // This function will only run in JS thread and is safe
         SvarClass* cls=src.classPtr();
-        Svar func=(*cls)["getJs"];
-        if(func.isFunction())
-            return func.as<SvarFunction>().Call({env,src}).as<Napi::Value>();
+        std::map<std::type_index,std::function<Napi::Value(Napi::Env,Svar)> > converts;
+        auto iter= converts.find(cls->_cpptype);
+        if(iter != converts.end())
+            return iter->second(env,src);
 
         std::function<Napi::Value(Napi::Env,Svar)> convert;
 
@@ -143,9 +252,9 @@ public:
         };
         else if(src.is<SvarObject>())
             convert=[](Napi::Env env,Svar src){
-//            HandleScope scope(env);
             Object obj = Object::New(env);
             for (std::pair<std::string,Svar> kv : src) {
+//                if(kv.first.front()=='_') continue;
                 obj.Set(kv.first,getNode(env,kv.second));
             }
             return obj;
@@ -157,42 +266,34 @@ public:
             };
         else if(src.is<SvarClass>())
             convert=&SvarJS::getNodeClass;
-//        else
-//            convert=[](Svar src){
-//                SvarClass& cls=*src.classPtr();
-//                auto js_constructor = cls._attr["__js_constructor__"];
-//                Local<Function> cons;
-//                if(js_constructor.isUndefined()){
-//                    cons=getNodeClass(src.classObject()).As<Function>();
-//                }
-//                else{
-//                    auto& constructor=js_constructor.as<Nan::Persistent<v8::Function>>();
-//                    cons = Nan::New<v8::Function>(constructor);
-//                }
+        else
+            convert=[](Napi::Env env,Svar src)->Napi::Value{
+                Svar js_constructor = src.classPtr()->_attr["__js_constructor"];
+                Object obj;
+                if(!js_constructor.is<FunctionReference>()){
+                    obj=getNodeClass(env,src.classObject()).As<Function>().New({});
+                }
+                else
+                    obj=js_constructor.as<FunctionReference>().New({});
+                SvarJS* v = Napi::ObjectWrap<SvarJS>::Unwrap(obj);
+                v->var=src;
+                return obj;
+            };
 
-//                Local<Object> selfObj=cons->NewInstance(Isolate::GetCurrent()->GetCurrentContext()).ToLocalChecked();
-
-//                SvarJS* self = ObjectWrap::Unwrap<SvarJS>(selfObj);
-//                self->object=src;
-
-//                return selfObj;
-//            };
-        else convert=[](Napi::Env env,Svar src){return env.Null();};
-
-        cls->def("getJs",convert);
+        converts[cls->_cpptype]=convert;
 
         return convert(env,src);
     }
 
-    Svar   object;
+    Svar   var;
 };
 
 }
 
-
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
-    Svar load=SvarFunction(&Registry::load);
-
+    static Svar load(Registry::load);
+    exports=Napi::SvarJS::getNode(env,load).As<Napi::Object>();
+    exports.Set("Svar", Napi::SvarJS::init(env));
     exports.Set("load",Napi::SvarJS::getNode(env,load));
     return exports;
 }
