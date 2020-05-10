@@ -6,7 +6,7 @@ This project is use to provide javascript support.
 
 **Warning**: This project is still under develop.
 
-svar_v8 auto wrap the following c++ objects:
+svar_napi auto wrap the following c++ objects:
 
 * Json Types:  number, boolean, string, object, array
 * Function  :  Both Js call C++ and C++ call JS (Not thread safe now)
